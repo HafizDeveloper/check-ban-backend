@@ -13,9 +13,14 @@ const TG_CHAT_ID = process.env.TG_CHAT_ID;
 app.use(express.json());
 app.use(express.static(path.join(__dirname)));
 
-function fetchText(url) {
+function fetchWithHeaders(url, headers) {
     return new Promise((resolve, reject) => {
-        https.get(url, { headers: { Accept: 'application/json' } }, (res) => {
+        const parsed = new URL(url);
+        https.get(url, {
+            headers: { Accept: 'application/json', ...headers },
+            hostname: parsed.hostname,
+            path: parsed.pathname + parsed.search,
+        }, (res) => {
             let body = '';
             res.on('data', (chunk) => body += chunk);
             res.on('end', () => resolve({ status: res.statusCode, body }));
@@ -58,15 +63,24 @@ app.get('/api/player/:uid/ban-check', async (req, res) => {
     }
 
     try {
-        const targetUrl = `https://freefirehub.com/api/player/${encodeURIComponent(uid)}/ban-check`;
-        const response = await fetchText(targetUrl);
+        const banUrl = `https://ff.garena.com/api/antihack/check_banned?lang=en&uid=${encodeURIComponent(uid)}`;
+        const response = await fetchWithHeaders(banUrl, {
+            'X-Requested-With': 'B6FksShzIgjfrYImLpTsadjS86sddhFH',
+            'Referer': 'https://ff.garena.com/en/support/'
+        });
 
         if (!response.body) {
             return res.status(502).json({ error: 'Empty response from upstream API' });
         }
 
         const parsed = JSON.parse(response.body);
-        res.status(response.status === 200 ? 200 : 502).json(parsed);
+
+        const result = {
+            is_banned: parsed.data ? parsed.data.is_banned : 0,
+            ban_period_months: parsed.data ? parsed.data.period : 0,
+        };
+
+        res.json(result);
     } catch (err) {
         res.status(502).json({ error: 'Unable to fetch upstream API', details: err.message });
     }
