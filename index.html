@@ -148,7 +148,7 @@
 
             <div class="quick-check-card">
                 <div class="card-header">
-                    <h2>Quick Ban Check</h2>
+                    <h2>⚡ Quick Ban Check</h2>
                     <p>Instantly check if any player's account is banned</p>
                 </div>
                 <div class="quick-check-form">
@@ -358,6 +358,52 @@
             </div>
         </section>
     </main>
+
+    <!-- ========================================= -->
+    <!-- BAN USER MODAL — pilih tempoh ban         -->
+    <!-- ========================================= -->
+    <div class="ban-modal-overlay" id="banModal" style="display:none;">
+        <div class="ban-modal" role="dialog" aria-modal="true" aria-labelledby="banModalTitle">
+            <div class="ban-modal-header">
+                <h3 id="banModalTitle">⛔ Ban Account</h3>
+                <button type="button" class="ban-modal-close" onclick="closeBanModal()" aria-label="Close">✕</button>
+            </div>
+
+            <div class="ban-modal-body">
+                <div class="ban-modal-target">
+                    <div class="ban-modal-target-item">
+                        <span>Player UID</span>
+                        <strong id="banModalUid">-</strong>
+                    </div>
+                    <div class="ban-modal-target-item">
+                        <span>Nickname</span>
+                        <strong id="banModalNickname">-</strong>
+                    </div>
+                </div>
+
+                <label class="ban-modal-label">Pilih tempoh ban</label>
+                <div class="ban-duration-options">
+                    <button type="button" class="ban-duration-btn active" data-days="7" onclick="selectBanDuration(7)">
+                        <span class="ban-duration-num">7</span>
+                        <span class="ban-duration-unit">Hari</span>
+                    </button>
+                    <button type="button" class="ban-duration-btn" data-days="30" onclick="selectBanDuration(30)">
+                        <span class="ban-duration-num">30</span>
+                        <span class="ban-duration-unit">Hari</span>
+                    </button>
+                </div>
+
+                <label class="ban-modal-label" for="banReasonInput">Sebab ban <em>(pilihan)</em></label>
+                <input type="text" id="banReasonInput" class="ban-reason-input" maxlength="80"
+                    placeholder="Contoh: Gunakan cheat / hack">
+            </div>
+
+            <div class="ban-modal-footer">
+                <button type="button" class="btn-cancel-ban" onclick="closeBanModal()">Batal</button>
+                <button type="button" class="btn-confirm-ban" onclick="confirmBan()">Confirm Ban</button>
+            </div>
+        </div>
+    </div>
 
     <script src="script.js"></script>
 </body>
