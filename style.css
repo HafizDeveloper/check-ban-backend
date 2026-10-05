@@ -1270,3 +1270,373 @@ body {
         padding: 16px;
     }
 }
+
+/* =========================================
+   BAN USER - button, modal, toast
+   ========================================= */
+
+.badge-localban {
+    background: rgba(239, 68, 68, 0.18);
+    color: var(--accent-red);
+}
+
+.ban-actions {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 14px;
+    padding: 16px 28px;
+    background: rgba(239, 68, 68, 0.05);
+    border-top: 1px solid rgba(239, 68, 68, 0.12);
+}
+
+.btn-ban,
+.btn-unban {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    padding: 12px 26px;
+    border: none;
+    border-radius: var(--radius-md);
+    font-size: 0.92rem;
+    font-weight: 700;
+    font-family: inherit;
+    letter-spacing: 0.2px;
+    cursor: pointer;
+    transition: transform 0.18s ease, box-shadow 0.18s ease, filter 0.18s ease;
+}
+
+.btn-ban {
+    background: linear-gradient(135deg, #ef4444, #b91c1c);
+    color: #fff;
+    box-shadow: 0 6px 18px rgba(239, 68, 68, 0.3);
+}
+
+.btn-ban:hover {
+    transform: translateY(-2px);
+    filter: brightness(1.07);
+    box-shadow: 0 10px 24px rgba(239, 68, 68, 0.42);
+}
+
+.btn-unban {
+    background: linear-gradient(135deg, #10b981, #059669);
+    color: #fff;
+    box-shadow: 0 6px 18px rgba(16, 185, 129, 0.28);
+}
+
+.btn-unban:hover {
+    transform: translateY(-2px);
+    filter: brightness(1.07);
+    box-shadow: 0 10px 24px rgba(16, 185, 129, 0.4);
+}
+
+.btn-ban:active,
+.btn-unban:active {
+    transform: translateY(0);
+}
+
+.ban-hint {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+}
+
+.ban-hint strong {
+    color: var(--accent-orange);
+}
+
+/* ---- Ban Modal ---- */
+.ban-modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(4, 7, 15, 0.78);
+    backdrop-filter: blur(6px);
+    -webkit-backdrop-filter: blur(6px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    z-index: 2000;
+    animation: fadeIn 0.2s ease;
+}
+
+@keyframes fadeIn {
+    from { opacity: 0; }
+    to { opacity: 1; }
+}
+
+.ban-modal {
+    width: 100%;
+    max-width: 440px;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-lg);
+    box-shadow: var(--shadow-lg);
+    overflow: hidden;
+    animation: modalPop 0.25s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@keyframes modalPop {
+    from { opacity: 0; transform: translateY(16px) scale(0.97); }
+    to { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+.ban-modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 18px 22px;
+    background: linear-gradient(135deg, rgba(239, 68, 68, 0.16), rgba(239, 68, 68, 0.04));
+    border-bottom: 1px solid rgba(239, 68, 68, 0.16);
+}
+
+.ban-modal-header h3 {
+    font-size: 1.05rem;
+    font-weight: 800;
+    color: var(--text-primary);
+}
+
+.ban-modal-close {
+    width: 32px;
+    height: 32px;
+    border: none;
+    border-radius: 8px;
+    background: rgba(255, 255, 255, 0.06);
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 0.95rem;
+    transition: 0.18s ease;
+}
+
+.ban-modal-close:hover {
+    background: rgba(239, 68, 68, 0.22);
+    color: #fff;
+}
+
+.ban-modal-body {
+    padding: 22px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+.ban-modal-target {
+    display: flex;
+    gap: 10px;
+}
+
+.ban-modal-target-item {
+    flex: 1;
+    min-width: 0;
+    background: var(--bg-input);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+}
+
+.ban-modal-target-item span {
+    font-size: 0.68rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: var(--text-muted);
+}
+
+.ban-modal-target-item strong {
+    font-size: 0.92rem;
+    font-family: 'Courier New', monospace;
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.ban-modal-label {
+    font-size: 0.78rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.6px;
+    color: var(--text-secondary);
+}
+
+.ban-modal-label em {
+    font-style: normal;
+    font-weight: 500;
+    text-transform: none;
+    letter-spacing: 0;
+    color: var(--text-muted);
+}
+
+.ban-duration-options {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 10px;
+}
+
+.ban-duration-btn {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 3px;
+    padding: 14px 10px;
+    background: var(--bg-input);
+    border: 1.5px solid var(--border-color);
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    color: var(--text-secondary);
+    font-family: inherit;
+    transition: transform 0.18s ease, border-color 0.18s ease, box-shadow 0.18s ease;
+}
+
+.ban-duration-btn .ban-duration-num {
+    font-size: 1.5rem;
+    font-weight: 800;
+    line-height: 1;
+}
+
+.ban-duration-btn .ban-duration-unit {
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.ban-duration-btn:hover {
+    border-color: var(--border-hover);
+    color: var(--text-primary);
+    transform: translateY(-2px);
+}
+
+.ban-duration-btn.active {
+    background: linear-gradient(135deg, rgba(239, 68, 68, 0.2), rgba(239, 68, 68, 0.07));
+    border-color: rgba(239, 68, 68, 0.6);
+    color: #fca5a5;
+    box-shadow: 0 0 18px rgba(239, 68, 68, 0.22);
+}
+
+.ban-reason-input {
+    width: 100%;
+    padding: 12px 14px;
+    background: var(--bg-input);
+    border: 1.5px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    color: var(--text-primary);
+    font-size: 0.9rem;
+    font-family: inherit;
+    outline: none;
+    transition: border-color 0.18s ease;
+}
+
+.ban-reason-input:focus {
+    border-color: var(--border-hover);
+}
+
+.ban-reason-input::placeholder {
+    color: var(--text-muted);
+}
+
+.ban-modal-footer {
+    display: flex;
+    gap: 10px;
+    justify-content: flex-end;
+    padding: 16px 22px;
+    background: rgba(255, 255, 255, 0.02);
+    border-top: 1px solid var(--border-color);
+}
+
+.btn-cancel-ban,
+.btn-confirm-ban {
+    padding: 11px 22px;
+    border: none;
+    border-radius: var(--radius-sm);
+    font-size: 0.88rem;
+    font-weight: 700;
+    font-family: inherit;
+    cursor: pointer;
+    transition: transform 0.18s ease, filter 0.18s ease, background 0.18s ease;
+}
+
+.btn-cancel-ban {
+    background: rgba(255, 255, 255, 0.07);
+    color: var(--text-secondary);
+}
+
+.btn-cancel-ban:hover {
+    background: rgba(255, 255, 255, 0.12);
+    color: var(--text-primary);
+}
+
+.btn-confirm-ban {
+    background: linear-gradient(135deg, #ef4444, #b91c1c);
+    color: #fff;
+    box-shadow: 0 6px 16px rgba(239, 68, 68, 0.3);
+}
+
+.btn-confirm-ban:hover {
+    transform: translateY(-2px);
+    filter: brightness(1.08);
+}
+
+/* ---- Toast ---- */
+.app-toast {
+    position: fixed;
+    left: 50%;
+    bottom: 32px;
+    transform: translate(-50%, 24px);
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    color: var(--text-primary);
+    padding: 13px 22px;
+    border-radius: 50px;
+    font-size: 0.88rem;
+    font-weight: 600;
+    box-shadow: var(--shadow-lg);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.25s ease, transform 0.25s ease;
+    z-index: 3000;
+    max-width: calc(100vw - 40px);
+}
+
+.app-toast.show {
+    opacity: 1;
+    transform: translate(-50%, 0);
+}
+
+.app-toast.danger {
+    border-color: rgba(239, 68, 68, 0.5);
+    background: linear-gradient(135deg, rgba(239, 68, 68, 0.2), rgba(17, 24, 39, 0.96));
+}
+
+.app-toast.success {
+    border-color: rgba(16, 185, 129, 0.5);
+    background: linear-gradient(135deg, rgba(16, 185, 129, 0.2), rgba(17, 24, 39, 0.96));
+}
+
+@media (max-width: 480px) {
+    .ban-actions {
+        padding: 14px 16px;
+    }
+
+    .btn-ban,
+    .btn-unban {
+        width: 100%;
+    }
+
+    .ban-modal-target {
+        flex-direction: column;
+    }
+
+    .ban-modal-footer {
+        flex-direction: column-reverse;
+    }
+
+    .btn-cancel-ban,
+    .btn-confirm-ban {
+        width: 100%;
+    }
+}
