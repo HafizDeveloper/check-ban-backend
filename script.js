@@ -25,9 +25,12 @@ const INFO_SOURCES = [
         headers: {},
     },
     {
-        // Alternatif bebas key (CORS dibenarkan)
-        name: 'gameskinbo',
-        enabled: !!GAMESKINBO_API_KEY,
+        // DIMATIKAN — api.gameskinbo.com hanya benarkan CORS untuk domain
+        // gameskinbo.com, jadi panggilan terus dari browser memang tak akan
+        // lepas (akan diblock) tapi tetap membazir kuota API. Backend (#1)
+        // yang proxy kan ia.
+        name: 'gameskinbo (direct)',
+        enabled: false,
         proxy: false,
         url: (uid, region) => `https://api.gameskinbo.com/ff-info/get?uid=${uid}&region=${region}`,
         headers: { 'x-api-key': GAMESKINBO_API_KEY },
@@ -461,7 +464,17 @@ async function sendLogToTelegram(message) {
 // up through the Info Player sources and patch the already-rendered card.
 // Best-effort: failures are silent and the ban result is never blocked.
 // =========================================
-const nicknameCache = {}; // uid -> { nickname, region }
+// Simpan dalam localStorage — plan percuma gameskinbo hanya 5 panggilan/minit,
+// jadi jangan bazir panggilan bila user buka page semula.
+const NICKNAME_CACHE_KEY = 'infoplayer_nicknames';
+let nicknameCache = {}; // uid -> { nickname, region }
+try {
+    nicknameCache = JSON.parse(localStorage.getItem(NICKNAME_CACHE_KEY) || '{}') || {};
+} catch (e) { nicknameCache = {}; }
+
+function saveNicknameCache() {
+    try { localStorage.setItem(NICKNAME_CACHE_KEY, JSON.stringify(nicknameCache)); } catch (e) { /* private mode */ }
+}
 
 async function enrichNickname(data, uid) {
     if (!data || data.nickname) return;
@@ -479,9 +492,10 @@ async function enrichNickname(data, uid) {
             region: info.basicInfo.region || '',
         };
         nicknameCache[uid] = resolved;
+        saveNicknameCache();
         applyNickname(data, uid, resolved);
     } catch (err) {
-        // No source configured / all sources failed — card stays "Unknown".
+        // Sumber tak boleh dijangka / semua gagal — kad kekal "Unknown".
         console.log('[BanChecker] Nickname not available:', err.message);
     }
 }
@@ -665,7 +679,7 @@ function displayInfoResult(data) {
 // "Unknown" senyap supaya pengguna tahu apa yang perlu dibuat.
 function nicknameCell(value) {
     if (!value || value === 'Unknown') {
-        return 'Unknown <span class="nick-hint">· Info Player API key not set</span>';
+        return 'Unknown <span class="nick-hint">· Info API unavailable (rate limit / offline)</span>';
     }
     return escapeHTML(String(value));
 }
