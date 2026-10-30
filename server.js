@@ -65,81 +65,185 @@ function postJson(url, payload) {
 const INFO_LOOKUP_TIMEOUT_MS = 4000;
 
 // --- Sumber Info Player (nickname / region) -------------------------------
-// api.gameskinbo.com tak benarkan CORS untuk domain lain (Access-Control-Allow-
-// Origin tetap https://gameskinbo.com), jadi browser tak boleh panggil terus.
-// Backend ni jadi proxy: panggil dari server (tiada CORS) dan pulangkan balik.
+// Tiada satu pun source nickname ni benarkan browser panggil terus (CORS),
+// jadi backend ni jadi proxy: panggil dari server (tiada CORS) dan pulangkan
+// balik untuk frontend.
 //
-// Turutan:
+// Turutan — cuba sampai satu berjaya:
 //   1. INFO_API_URL + INFO_API_KEY (env Render) kalau diset — keutamaan.
-//   2. GAMESKINBO_API_KEY — default dah ada dalam kod; set "" untuk matikan.
+//   2. supremeff — tanpa key, tanpa kuota. Matikan: SUPREMEFF_API=off
+//   3. gameskinbo — key default dalam kod. Matikan: GAMESKINBO_API_KEY=off
+//
+// Setiap source dicuba berurutan, supaya bila satu down (gameskinbo pernah
+// pulangkan 500 berminggu-minggu), nickname tetap datang dari source lain.
 const DEFAULT_GAMESKINBO_KEY = 'MHTPZ_TWFybEXrBH6X-3GxNtQP62jxgo0rAPsx6CON4';
+const SUPREMEFF_URL = 'https://x-api-services.supremeff.online/visit';
 
-function getInfoTarget(uid, region) {
+// "off" / "0" / "disabled" / "none" mematikan source.
+// Nilai kosong TAK mematikan apa-apa — itu risiko bila salin .env.example
+// ke Render tanpa isi.
+function envDisabled(name) {
+    return /^(off|0|disabled|none)$/i.test((process.env[name] || '').trim());
+}
+
+// Node tak hantar User-Agent secara default; di belakang Cloudflare kadangkala
+// request tanpa UA kena 403.
+const BROWSER_UA =
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+
+function getInfoTargets(uid, region) {
     const INFO_API_URL = process.env.INFO_API_URL;
     const INFO_API_KEY = process.env.INFO_API_KEY;
     const INFO_API_HEADER = process.env.INFO_API_HEADER || 'x-api-key';
+    const targets = [];
 
     if (INFO_API_URL && INFO_API_KEY) {
-        return {
+        targets.push({
+            source: 'info_api_env',
             url: INFO_API_URL
                 .replace('{uid}', encodeURIComponent(uid))
                 .replace('{region}', encodeURIComponent(region || '')),
             headers: { [INFO_API_HEADER]: INFO_API_KEY },
-        };
+        });
     }
 
-   
-    const gameskinboKey = process.env.GAMESKINBO_API_KEY === ''
-        ? ''
-        : (process.env.GAMESKINBO_API_KEY || DEFAULT_GAMESKINBO_KEY);
+    // supremeff pulangkan {PlayerName, Region, Level, UID, VisitCount} sahaja
+    // — cukup untuk kad nickname, tapi tak cukup untuk paparan Info Player
+    // penuh. Jadi ia hanya untuk laluan nickname (nicknameOnly).
+    if (!envDisabled('SUPREMEFF_API')) {
+        targets.push({
+            source: 'supremeff',
+            nicknameOnly: true,
+            url: `${SUPREMEFF_URL}?uid=${encodeURIComponent(uid)}&server_name=${encodeURIComponent(String(region || '').toUpperCase())}`,
+            headers: { Accept: 'application/json', 'User-Agent': BROWSER_UA },
+        });
+    }
 
-    if (!gameskinboKey) return null;
+    const gameskinboKey = getEnabledGameskinboKey();
+    if (gameskinboKey) {
+        targets.push({
+            source: 'gameskinbo',
+            url: `https://api.gameskinbo.com/ff-info/get?uid=${encodeURIComponent(uid)}&region=${encodeURIComponent(region || '')}`,
+            headers: {
+                'x-api-key': gameskinboKey,
+                'User-Agent': BROWSER_UA,
+                'Accept-Language': 'en-US,en;q=0.9',
+            },
+        });
+    }
 
-    return {
-        url: `https://api.gameskinbo.com/ff-info/get?uid=${encodeURIComponent(uid)}&region=${encodeURIComponent(region || '')}`,
-        headers: { 'x-api-key': gameskinboKey },
-    };
+    return targets;
 }
 
-const INFO_CACHE_TTL_MS = 10 * 60 * 1000;
-const INFO_FAIL_TTL_MS = 45 * 1000;
+// Nilai key gameskinbo yang aktif.
+// Nilai kosong ("") TAK bermakna matikan — itu risiko bila salin .env.example
+// ke Render tanpa isi. Nak matikan betul-betul guna: GAMESKINBO_API_KEY=off
+function getEnabledGameskinboKey() {
+    const envKey = (process.env.GAMESKINBO_API_KEY || '').trim();
+    if (/^(off|0|disabled|none)$/i.test(envKey)) return '';
+    return envKey || DEFAULT_GAMESKINBO_KEY;
+}
+
+const INFO_CACHE_TTL_MS = 12 * 60 * 60 * 1000;
+const INFO_FAIL_TTL_MS = 60 * 1000;
 const infoCache = new Map(); // `${uid}|${region}` -> { body, error, expiresAt }
 
-async function fetchInfoRaw(uid, region) {
-    const target = getInfoTarget(uid, region);
-    if (!target) {
+// Rekod beberapa panggilan terakhir — dipaparkan oleh /api/info-config supaya
+// bila nickname tak keluar kat live, kita boleh nampak status sebenar yang
+// diterima dari IP server (403? 429? 500?).
+const recentInfoCalls = [];
+function noteInfoCall(entry) {
+    recentInfoCalls.push(Object.assign({ at: new Date().toISOString() }, entry));
+    while (recentInfoCalls.length > 8) recentInfoCalls.shift();
+}
+
+async function fetchInfo(uid, region, opts) {
+    const forNickname = !!(opts && opts.forNickname);
+    // Source "nicknameOnly" (supremeff) hanya ada nama + level + region —
+    // tak cukup untuk paparan Info Player penuh. Skip bila caller mahukan
+    // respons mentah penuh.
+    const targets = getInfoTargets(uid, region)
+        .filter((t) => forNickname || !t.nicknameOnly);
+
+    if (!targets.length) {
         const err = new Error('Info API not configured');
         err.notConfigured = true;
         throw err;
     }
 
-    // Plan percuma gameskinbo hanya 5 panggilan/minit dan dia pulangkan 500
-    // (bukan 429) bila kena limit. Simpan keputusan berjaya 10 minit, dan gagal
-    // 45 saat — supaya check berulang tak bazir kuota pada panggilan yang
-    // memang dah pasti gagal.
-    const cacheKey = `${uid}|${region || ''}`;
+    // Keputusan berjaya disimpan 12 jam (nickname jarang berubah, dan kuota
+    // source percuma/berbayar sangat kecil). Kegagalan 60 saat sahaja —
+    // supaya bila source pulih, cubaan seterusnya terus jalan.
+    const cacheKey = `${uid}|${region || ''}|${forNickname ? 'nick' : 'full'}`;
     const cached = infoCache.get(cacheKey);
     if (cached && cached.expiresAt > Date.now()) {
-        if (cached.body) return cached.body;
+        if (cached.value) return cached.value;
         throw cached.error;
     }
 
-    const remember = (body, error, ttl) => {
+    const remember = (value, error, ttl) => {
         if (infoCache.size > 500) infoCache.clear();
-        infoCache.set(cacheKey, { body, error, expiresAt: Date.now() + ttl });
+        infoCache.set(cacheKey, { value, error, expiresAt: Date.now() + ttl });
     };
 
-    try {
-        const response = await fetchWithHeaders(target.url, target.headers, INFO_LOOKUP_TIMEOUT_MS);
-        if (response.status === 200 && response.body) {
-            remember(response.body, null, INFO_CACHE_TTL_MS);
-            return response.body;
+    let lastError = null;
+
+    for (const target of targets) {
+        const started = Date.now();
+        let response;
+        try {
+            response = await fetchWithHeaders(target.url, target.headers, INFO_LOOKUP_TIMEOUT_MS);
+        } catch (err) {
+            noteInfoCall({ source: target.source, status: 0, ms: Date.now() - started, body: err.message });
+            lastError = new Error(`[${target.source}] ${err.message}`);
+            continue;
         }
-        throw new Error(`Info API HTTP ${response.status}`);
-    } catch (err) {
-        remember(null, err, INFO_FAIL_TTL_MS);
-        throw err;
+
+        // Simpan sedikit body bila gagal — "Info API HTTP 403" sahaja tak
+        // beritahu sama ada server kita kena block, key salah, atau kuota habis.
+        const snippet = String(response.body || '').replace(/\s+/g, ' ').trim().slice(0, 200);
+        const httpOk = response.status === 200 && !!response.body;
+        let note = 'ok';
+
+        if (!httpOk) {
+            note = snippet || '(empty response)';
+            lastError = new Error(`[${target.source}] HTTP ${response.status}${snippet ? ` — ${snippet}` : ''}`);
+            noteInfoCall({ source: target.source, status: response.status, ms: Date.now() - started, body: note });
+            continue;
+        }
+
+        let info = null;
+        try {
+            info = extractAccountInfo(JSON.parse(response.body));
+        } catch (parseErr) {
+            note = `JSON tak sah: ${parseErr.message}`;
+        }
+        const useful = !!(info && (info.nickname || info.region));
+
+        // Bila cari nickname, jawapan 200 yang kosong tetap dianggap gagal —
+        // biar source seterusnya cuba.
+        if (forNickname && !useful) {
+            if (note === 'ok') note = 'tiada nickname/region dalam respons';
+            lastError = new Error(`[${target.source}] ${note}`);
+            noteInfoCall({ source: target.source, status: response.status, ms: Date.now() - started, body: note });
+            continue;
+        }
+
+        noteInfoCall({ source: target.source, status: response.status, ms: Date.now() - started, body: note });
+
+        const value = {
+            raw: response.body,
+            nickname: info ? info.nickname || '' : '',
+            region: info ? info.region || region || '' : (region || ''),
+            source: target.source,
+        };
+        remember(value, null, INFO_CACHE_TTL_MS);
+        return value;
     }
+
+    const err = lastError || new Error('Info API gagal');
+    remember(null, err, INFO_FAIL_TTL_MS);
+    throw err;
 }
 
 function extractAccountInfo(raw) {
@@ -167,21 +271,27 @@ function extractAccountInfo(raw) {
     }
 
     // Flat shape: {nickname}, {player_name}, {name}, {PlayerNickname}, {uid}
-    const nickname = d.nickname || d.player_name || d.PlayerNickname || d.name || d.userName || '';
-    const region = d.region || d.server || d.serverRegion || d.GameServerID || '';
+    // Termasuk bentuk rasmi Garena / HL Gaming: {AccountName, AccountRegion},
+    // dan bentuk supremeff: {PlayerName, Region, Level, UID, VisitCount}.
+    const nickname =
+        d.nickname || d.AccountName || d.accountName || d.PlayerName ||
+        d.player_name || d.PlayerNickname || d.playerName || d.name ||
+        d.userName || '';
+    const region =
+        d.region || d.Region || d.AccountRegion || d.accountRegion ||
+        d.server || d.serverRegion || d.server_name || d.GameServerID || '';
     if (nickname || region) return { nickname, region };
 
     return null;
 }
 
 async function lookupAccountInfo(uid, region) {
-    const body = await fetchInfoRaw(uid, region);
-    const info = extractAccountInfo(JSON.parse(body));
-    if (!info) return null;
+    const result = await fetchInfo(uid, region, { forNickname: true });
 
     return {
-        nickname: info.nickname || '',
-        region: info.region || region || '',
+        nickname: result.nickname || '',
+        region: result.region || region || '',
+        source: result.source || 'info_api',
     };
 }
 
@@ -219,12 +329,19 @@ app.get('/api/player/:uid/ban-check', async (req, res) => {
             if (info && info.nickname) {
                 result.nickname = info.nickname;
                 result.region = info.region || '';
-                result.info_source = 'info_api';
+                result.info_source = info.source || 'info_api';
             } else if (info) {
                 result.region = info.region || '';
-                result.info_source = 'info_api';
+                result.info_source = info.source || 'info_api';
+            } else {
+                result.info_source = 'no_data';
             }
         } catch (infoErr) {
+            // 'unconfigured' hanya untuk "memang takde sumber diset". Kalau
+            // sumber ada tapi panggilan gagal, sebut 'error' + sebabnya —
+            // front-end dan /api/info-config boleh tunjuk sebab sebenar.
+            result.info_source = infoErr.notConfigured ? 'unconfigured' : 'error';
+            result.info_error = String(infoErr.message || '').slice(0, 200);
             console.warn('[ban-check] nickname lookup skipped:', infoErr.message);
         }
 
@@ -232,6 +349,59 @@ app.get('/api/player/:uid/ban-check', async (req, res) => {
     } catch (err) {
         res.status(502).json({ error: 'Unable to fetch upstream API', details: err.message });
     }
+});
+
+// Debug: konfigurasi sumber info + panggilan terakhir + kuota bulanan.
+// Bila nickname tak keluar kat live, buka endpoint ni untuk nampak sebab
+// sebenar (403? key matikan? kuota habis?). Key dipaparkan 4 huruf sahaja.
+app.get('/api/info-config', async (req, res) => {
+    const targets = getInfoTargets('0', '');
+    const envKeyRaw = process.env.GAMESKINBO_API_KEY;
+    const key = getEnabledGameskinboKey();
+
+    const out = {
+        sources: targets.map((t) => ({
+            source: t.source,
+            nicknameOnly: !!t.nicknameOnly,
+            url: t.url.replace(/([?&]uid=)[^&]*/, '$1<uid>'),
+        })),
+        keyLast4: key ? key.slice(-4) : null,
+        env: {
+            INFO_API_URL: process.env.INFO_API_URL ? 'set' : 'unset',
+            INFO_API_KEY: process.env.INFO_API_KEY
+                ? `set (${process.env.INFO_API_KEY.length} char)`
+                : 'unset',
+            GAMESKINBO_API_KEY:
+                envKeyRaw === undefined
+                    ? 'unset -> pakai key dalam kod'
+                    : envKeyRaw.trim() === ''
+                        ? 'set tapi KOSONG -> kini pakai key dalam kod'
+                        : /^(off|0|disabled|none)$/i.test(envKeyRaw.trim())
+                            ? 'off -> source dimatikan'
+                            : 'set (custom key)',
+        },
+        cacheEntries: infoCache.size,
+        recentCalls: recentInfoCalls.slice(-8),
+    };
+
+    // Kuota bulanan free plan. Panggilan ni untuk semakan usage sahaja.
+    if (key) {
+        try {
+            const usage = await fetchWithHeaders(
+                'https://api.gameskinbo.com/api/usage',
+                { 'x-api-key': key },
+                6000
+            );
+            out.usage = {
+                status: usage.status,
+                body: String(usage.body || '').replace(/\s+/g, ' ').trim().slice(0, 200),
+            };
+        } catch (err) {
+            out.usage = { status: 0, body: err.message };
+        }
+    }
+
+    res.json(out);
 });
 
 // Info Player proxy — frontend calls this so the API key stays hidden.
@@ -248,8 +418,10 @@ app.get('/api/account', async (req, res) => {
     }
 
     try {
-        const body = await fetchInfoRaw(uid, region);
-        res.type('json').send(body);
+        // Laluan ini untuk paparan Info Player penuh — source yang hanya
+        // ada nickname (supremeff) memang dikecualikan dalam fetchInfo().
+        const result = await fetchInfo(uid, region, { forNickname: false });
+        res.type('json').send(result.raw);
     } catch (err) {
         if (err.notConfigured) {
             return res.status(503).json({
