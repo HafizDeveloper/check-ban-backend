@@ -62,7 +62,10 @@ function postJson(url, payload) {
     });
 }
 
-const INFO_LOOKUP_TIMEOUT_MS = 4000;
+// supremeff ambil ~3 saat dari jalur biasa, dan lebih dari itu dari server
+// Render (jauh dari host dia). 4 saat dulu menyebabkan banyak panggilan kena
+// "Request timed out" kat live, lepas tu nickname jadi Unknown.
+const INFO_LOOKUP_TIMEOUT_MS = 12000;
 
 // --- Sumber Info Player (nickname / region) -------------------------------
 // Tiada satu pun source nickname ni benarkan browser panggil terus (CORS),
@@ -186,7 +189,9 @@ async function fetchInfo(uid, region, opts) {
         infoCache.set(cacheKey, { value, error, expiresAt: Date.now() + ttl });
     };
 
-    let lastError = null;
+    // Kumpulkan semua kegagalan (bukan yang terakhir je) supaya info_error
+    // tunjukkan punca setiap source, bukan satu source terakhir sahaja.
+    const errors = [];
 
     for (const target of targets) {
         const started = Date.now();
@@ -195,7 +200,7 @@ async function fetchInfo(uid, region, opts) {
             response = await fetchWithHeaders(target.url, target.headers, INFO_LOOKUP_TIMEOUT_MS);
         } catch (err) {
             noteInfoCall({ source: target.source, status: 0, ms: Date.now() - started, body: err.message });
-            lastError = new Error(`[${target.source}] ${err.message}`);
+            errors.push(`[${target.source}] ${err.message}`);
             continue;
         }
 
@@ -207,7 +212,7 @@ async function fetchInfo(uid, region, opts) {
 
         if (!httpOk) {
             note = snippet || '(empty response)';
-            lastError = new Error(`[${target.source}] HTTP ${response.status}${snippet ? ` — ${snippet}` : ''}`);
+            errors.push(`[${target.source}] HTTP ${response.status}${snippet ? ` — ${snippet.slice(0, 100)}` : ''}`);
             noteInfoCall({ source: target.source, status: response.status, ms: Date.now() - started, body: note });
             continue;
         }
@@ -224,7 +229,7 @@ async function fetchInfo(uid, region, opts) {
         // biar source seterusnya cuba.
         if (forNickname && !useful) {
             if (note === 'ok') note = 'tiada nickname/region dalam respons';
-            lastError = new Error(`[${target.source}] ${note}`);
+            errors.push(`[${target.source}] ${note}`);
             noteInfoCall({ source: target.source, status: response.status, ms: Date.now() - started, body: note });
             continue;
         }
@@ -241,7 +246,7 @@ async function fetchInfo(uid, region, opts) {
         return value;
     }
 
-    const err = lastError || new Error('Info API gagal');
+    const err = new Error(errors.join(' · ') || 'Info API gagal');
     remember(null, err, INFO_FAIL_TTL_MS);
     throw err;
 }
@@ -304,45 +309,56 @@ app.get('/api/player/:uid/ban-check', async (req, res) => {
 
     try {
         const banUrl = `https://ff.garena.com/api/antihack/check_banned?lang=en&uid=${encodeURIComponent(uid)}`;
-        const response = await fetchWithHeaders(banUrl, {
-            'X-Requested-With': 'B6FksShzIgjfrYImLpTsadjS86sddhFH',
-            'Referer': 'https://ff.garena.com/en/support/'
-        });
 
-        if (!response.body) {
-            return res.status(502).json({ error: 'Empty response from upstream API' });
-        }
+        // Jalankan SERENTAK: ban check (Garena) dan nickname lookup (info API).
+        // Kalau berurutan, masa = kedua-dua tambah-tambah (4-10 saat); serentak,
+        // masa ikut yang paling lambat sahaja.
+        const banPromise = (async () => {
+            const response = await fetchWithHeaders(banUrl, {
+                'X-Requested-With': 'B6FksShzIgjfrYImLpTsadjS86sddhFH',
+                'Referer': 'https://ff.garena.com/en/support/'
+            });
 
-        const parsed = JSON.parse(response.body);
+            if (!response.body) {
+                throw new Error('Empty response from upstream API');
+            }
 
-        const result = {
-            is_banned: parsed.data ? parsed.data.is_banned : 0,
-            ban_period_months: parsed.data ? parsed.data.period : 0,
+            const parsed = JSON.parse(response.body);
+            return {
+                is_banned: parsed.data ? parsed.data.is_banned : 0,
+                ban_period_months: parsed.data ? parsed.data.period : 0,
+            };
+        })();
+
+        // Best-effort nickname/region lookup — never fails the ban check.
+        const infoPromise = lookupAccountInfo(uid, region)
+            .then((info) => ({ info }))
+            .catch((error) => ({ error }));
+
+        const [ban, infoRes] = await Promise.all([banPromise, infoPromise]);
+
+        const result = Object.assign({
             nickname: '',
             region: '',
             info_source: 'unconfigured',
-        };
+        }, ban);
 
-        // Best-effort nickname/region lookup — never fails the ban check.
-        try {
-            const info = await lookupAccountInfo(uid, region);
-            if (info && info.nickname) {
-                result.nickname = info.nickname;
-                result.region = info.region || '';
-                result.info_source = info.source || 'info_api';
-            } else if (info) {
-                result.region = info.region || '';
-                result.info_source = info.source || 'info_api';
-            } else {
-                result.info_source = 'no_data';
-            }
-        } catch (infoErr) {
+        if (infoRes.info && infoRes.info.nickname) {
+            result.nickname = infoRes.info.nickname;
+            result.region = infoRes.info.region || '';
+            result.info_source = infoRes.info.source || 'info_api';
+        } else if (infoRes.info) {
+            result.region = infoRes.info.region || '';
+            result.info_source = infoRes.info.source || 'info_api';
+        } else if (infoRes.error) {
             // 'unconfigured' hanya untuk "memang takde sumber diset". Kalau
             // sumber ada tapi panggilan gagal, sebut 'error' + sebabnya —
             // front-end dan /api/info-config boleh tunjuk sebab sebenar.
-            result.info_source = infoErr.notConfigured ? 'unconfigured' : 'error';
-            result.info_error = String(infoErr.message || '').slice(0, 200);
-            console.warn('[ban-check] nickname lookup skipped:', infoErr.message);
+            result.info_source = infoRes.error.notConfigured ? 'unconfigured' : 'error';
+            result.info_error = String(infoRes.error.message || '').slice(0, 400);
+            console.warn('[ban-check] nickname lookup skipped:', infoRes.error.message);
+        } else {
+            result.info_source = 'no_data';
         }
 
         res.json(result);
