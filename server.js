@@ -17,7 +17,7 @@ app.use(express.static(path.join(__dirname)));
 function fetchWithHeaders(url, headers, timeoutMs) {
     return new Promise((resolve, reject) => {
         const parsed = new URL(url);
-        const client = parsed.protocol === 'http:' ? http : https; // Info API ada yang hanya http
+        const client = parsed.protocol === 'http:' ? http : https; 
         const req = client.get(url, {
             headers: { Accept: 'application/json', ...headers },
             hostname: parsed.hostname,
@@ -62,25 +62,21 @@ function postJson(url, payload) {
     });
 }
 
-// supremeff ambil ~3 saat dari jalur biasa, dan lebih dari itu dari server
-// Render (jauh dari host dia). 4 saat dulu menyebabkan banyak panggilan kena
-// "Request timed out" kat live, lepas tu nickname jadi Unknown.
 const INFO_LOOKUP_TIMEOUT_MS = 12000;
 
-// --- Sumber Info Player (nickname / region) -------------------------------
-// Tiada satu pun source nickname ni benarkan browser panggil terus (CORS),
-// jadi backend ni jadi proxy: panggil dari server (tiada CORS) dan pulangkan
-// balik untuk frontend.
-//
-// Turutan — cuba sampai satu berjaya:
-//   1. INFO_API_URL + INFO_API_KEY (env Render) kalau diset — keutamaan.
-//   2. supremeff — tanpa key, tanpa kuota. Matikan: SUPREMEFF_API=off
-//   3. gameskinbo — key default dalam kod. Matikan: GAMESKINBO_API_KEY=off
-//
-// Setiap source dicuba berurutan, supaya bila satu down (gameskinbo pernah
-// pulangkan 500 berminggu-minggu), nickname tetap datang dari source lain.
 const DEFAULT_GAMESKINBO_KEY = 'MHTPZ_TWFybEXrBH6X-3GxNtQP62jxgo0rAPsx6CON4';
 const SUPREMEFF_URL = 'https://x-api-services.supremeff.online/visit';
+
+// HL Gaming Official — sumber kedua yang cover gap supremeff (dia ada data
+// untuk hampir semua UID, termasuk yang supremeff takde). Percuma tapi ada
+// had harian, jadi ia hanya dipanggil bila supremeff gagal.
+// Boleh ditukar melalui env: HL_USER_UID / HL_API_KEY (matikan: HL_API=off)
+const DEFAULT_HL_USER_UID = '1Rppn18RgqaN2qZNyT1etb9eTDh2';
+const DEFAULT_HL_API_KEY = 'pET26oZTgxn7O7Ig354wCGjwEzF14t';
+const HL_ACCOUNT_URL = 'https://proapis.hlgamingofficial.com/main/games/freefire/account/api';
+// Region default (paling lazim untuk audience site ni) kalau caller tak hantar
+// region. HL perlukan region yang BETUL — salah region dia balas 404.
+const HL_DEFAULT_REGIONS = ['SG', 'ID', 'IND', 'BD'];
 
 // "off" / "0" / "disabled" / "none" mematikan source.
 // Nilai kosong TAK mematikan apa-apa — itu risiko bila salin .env.example
@@ -122,10 +118,33 @@ function getInfoTargets(uid, region) {
         });
     }
 
+    // HL Gaming — satu target bagi setiap kandidat region (cuba berurutan
+    // sampai satu berjaya). Ia dipanggil hanya bila supremeff gagal, jadi
+    // kuota harian tak terbazir untuk UID yang supremeff memang dah ada.
+    const hlCreds = getEnabledHlCreds();
+    if (hlCreds) {
+        for (const reg of hlRegions(region)) {
+            targets.push({
+                source: 'hlgaming',
+                url:
+                    `${HL_ACCOUNT_URL}?sectionName=AccountInfo` +
+                    `&PlayerUid=${encodeURIComponent(uid)}` +
+                    `&region=${encodeURIComponent(reg)}` +
+                    `&useruid=${encodeURIComponent(hlCreds.useruid)}` +
+                    `&api=${encodeURIComponent(hlCreds.apiKey)}`,
+                headers: { Accept: 'application/json', 'User-Agent': BROWSER_UA },
+            });
+        }
+    }
+
     const gameskinboKey = getEnabledGameskinboKey();
-    if (gameskinboKey) {
+    // Bila gameskinbo tengah rosak (pemutus litar terbuka), lompati dia terus
+    // supaya kuota bulanan tak dibakar sia-sia — kecuali dia memang satu-satu
+    // sumber yang ada.
+    if (gameskinboKey && (!gameskinboBreaker.isOpen() || targets.length === 0)) {
         targets.push({
             source: 'gameskinbo',
+            onResult: (ok) => gameskinboBreaker.note(ok),
             url: `https://api.gameskinbo.com/ff-info/get?uid=${encodeURIComponent(uid)}&region=${encodeURIComponent(region || '')}`,
             headers: {
                 'x-api-key': gameskinboKey,
@@ -147,6 +166,57 @@ function getEnabledGameskinboKey() {
     return envKey || DEFAULT_GAMESKINBO_KEY;
 }
 
+// Kredensial HL Gaming. Env mengatasi nilai sedia dalam kod; "" atau "off"
+// mematikan source ni (senang kalau kuota harian habis dan tak mahu ia dipanggil).
+function getEnabledHlCreds() {
+    if (envDisabled('HL_API')) return null;
+    const useruid = (process.env.HL_USER_UID || DEFAULT_HL_USER_UID).trim();
+    const apiKey = (process.env.HL_API_KEY || DEFAULT_HL_API_KEY).trim();
+    if (!useruid || !apiKey) return null;
+    if (/^(off|0|disabled|none)$/i.test(apiKey)) return null;
+    return { useruid, apiKey };
+}
+
+// Senarai region yang akan dicuba untuk HL Gaming — kunci kerana endpoint dia
+// wajibkan region yang betul (salah = 404). Caller dahulu, kemudian default.
+function hlRegions(region) {
+    const wanted = String(region || '').trim().toUpperCase();
+    const list = [];
+    const add = (r) => {
+        if (r && !list.includes(r) && list.length < 4) list.push(r);
+    };
+    add(wanted);
+    for (const r of HL_DEFAULT_REGIONS) add(r);
+    return list;
+}
+
+// Pemutus litar (circuit breaker) untuk gameskinbo.
+// Kuota dia cuma 50 panggilan/bulan, dan dia PERNAH pulangkan 402 untuk semua
+// UID berminggu-minggu. Tanpa pemutus ni, setiap UID yang gagal masih bakar
+// 1 kredit kuota setiap 60 saat. Lepas 3 kegagalan berturut, dia berehat 30
+// minit — supremeff terus dipakai, gameskinbo tunggu sihat.
+const GAMESKINBO_BREAKER_FAILS = 3;
+const GAMESKINBO_BREAKER_MS = 30 * 60 * 1000;
+const gameskinboBreaker = {
+    fails: 0,
+    openUntil: 0,
+    isOpen() {
+        return Date.now() < this.openUntil;
+    },
+    note(ok) {
+        if (ok) {
+            this.fails = 0;
+            this.openUntil = 0;
+            return;
+        }
+        this.fails += 1;
+        if (this.fails >= GAMESKINBO_BREAKER_FAILS) {
+            this.fails = 0;
+            this.openUntil = Date.now() + GAMESKINBO_BREAKER_MS;
+        }
+    },
+};
+
 const INFO_CACHE_TTL_MS = 12 * 60 * 60 * 1000;
 const INFO_FAIL_TTL_MS = 60 * 1000;
 const infoCache = new Map(); // `${uid}|${region}` -> { body, error, expiresAt }
@@ -158,6 +228,17 @@ const recentInfoCalls = [];
 function noteInfoCall(entry) {
     recentInfoCalls.push(Object.assign({ at: new Date().toISOString() }, entry));
     while (recentInfoCalls.length > 8) recentInfoCalls.shift();
+}
+
+// Kuota harian HL Gaming (had 25/hari) — dikemas kini setiap respons berjaya.
+let hlUsage = null;
+
+// Sembunyikan identifier sensitif bila papar URL sumber dalam /api/info-config
+// (endpoint debug ni terbuka kepada sesiapa — tak boleh bocorkan API key).
+function maskDebugUrl(url) {
+    return String(url)
+        .replace(/([?&](?:uid|PlayerUid|playeruid|login_id)=)[^&]*/gi, '$1<uid>')
+        .replace(/([?&](?:api|apikey|api_key|key|token)=)[^&]*/gi, '$1***');
 }
 
 async function fetchInfo(uid, region, opts) {
@@ -199,6 +280,7 @@ async function fetchInfo(uid, region, opts) {
         try {
             response = await fetchWithHeaders(target.url, target.headers, INFO_LOOKUP_TIMEOUT_MS);
         } catch (err) {
+            if (target.onResult) target.onResult(false);
             noteInfoCall({ source: target.source, status: 0, ms: Date.now() - started, body: err.message });
             errors.push(`[${target.source}] ${err.message}`);
             continue;
@@ -210,6 +292,8 @@ async function fetchInfo(uid, region, opts) {
         const httpOk = response.status === 200 && !!response.body;
         let note = 'ok';
 
+        if (target.onResult) target.onResult(httpOk);
+
         if (!httpOk) {
             note = snippet || '(empty response)';
             errors.push(`[${target.source}] HTTP ${response.status}${snippet ? ` — ${snippet.slice(0, 100)}` : ''}`);
@@ -217,11 +301,19 @@ async function fetchInfo(uid, region, opts) {
             continue;
         }
 
+        let parsed = null;
         let info = null;
         try {
-            info = extractAccountInfo(JSON.parse(response.body));
+            parsed = JSON.parse(response.body);
+            info = extractAccountInfo(parsed);
         } catch (parseErr) {
             note = `JSON tak sah: ${parseErr.message}`;
+        }
+
+        // HL Gaming lapor kuota harian dalam setiap respons (had 25/hari).
+        // Simpan untuk /api/info-config supaya mudah nampak bila nak habis.
+        if (target.source === 'hlgaming' && parsed && parsed.usage) {
+            hlUsage = Object.assign({ at: new Date().toISOString() }, parsed.usage);
         }
         const useful = !!(info && (info.nickname || info.region));
 
@@ -379,7 +471,7 @@ app.get('/api/info-config', async (req, res) => {
         sources: targets.map((t) => ({
             source: t.source,
             nicknameOnly: !!t.nicknameOnly,
-            url: t.url.replace(/([?&]uid=)[^&]*/, '$1<uid>'),
+            url: maskDebugUrl(t.url),
         })),
         keyLast4: key ? key.slice(-4) : null,
         env: {
@@ -395,8 +487,21 @@ app.get('/api/info-config', async (req, res) => {
                         : /^(off|0|disabled|none)$/i.test(envKeyRaw.trim())
                             ? 'off -> source dimatikan'
                             : 'set (custom key)',
+            HL_API: envDisabled('HL_API')
+                ? 'off -> source dimatikan'
+                : getEnabledHlCreds()
+                    ? 'aktif (key dalam kod / env)'
+                    : 'tiada kredensial',
         },
         cacheEntries: infoCache.size,
+        hlgamingUsage: hlUsage,
+        gameskinboBreaker: {
+            open: gameskinboBreaker.isOpen(),
+            openUntil: gameskinboBreaker.openUntil
+                ? new Date(gameskinboBreaker.openUntil).toISOString()
+                : null,
+            consecutiveFails: gameskinboBreaker.fails,
+        },
         recentCalls: recentInfoCalls.slice(-8),
     };
 
